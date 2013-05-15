@@ -87,12 +87,13 @@
 
             // STK Mandolin:
             
-            ((SInt16*)audio->mBuffers[0].mData)[i] = self.myMandolin->tick();
-            ((SInt16*)audio->mBuffers[1].mData)[i] = self.myMandolin->tick();
+            ((float*)audio->mBuffers[0].mData)[i] = self.myMandolin->tick();
+            ((float*)audio->mBuffers[1].mData)[i] = self.myMandolin->tick();
             
             
         }
     }];
+    self.mySynthChannel.audioDescription = [AEAudioController nonInterleavedFloatStereoAudioDescription];
     
     
     //No sound!
