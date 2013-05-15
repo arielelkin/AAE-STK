@@ -9,24 +9,20 @@
 #import "ViewController.h"
 #import "AEAudioController.h"
 #import "AEBlockChannel.h"
+#import "AEAudioUnitFilter.h"
 
 #import "Stk.h"
 #import "Mandolin.h"
 
+
 @interface ViewController ()
 
 @property (nonatomic, retain) AEAudioController *audioController;
-@property (nonatomic, retain) AEBlockChannel *myOscillatorChannel;
 @property (nonatomic, retain) AEBlockChannel *mySynthChannel;
+@property (nonatomic, retain) AEAudioUnitFilter *myReverb;
+@property (nonatomic, retain) AEAudioUnitFilter *myDistortion;
 
 @property stk::Mandolin *myMandolin;
-
-@property __block float oscillatorRate;
-
-////Do we need to add an audioDescription whenever we create an AEBlockChannel?
-////when should we chose an audio unit file player over a AEAudioFilePlayer?
-
-////tried setting the ASBD to interleaved16BitStereoAudioDescription
 
 @end
 
@@ -37,79 +33,90 @@
     
     //AEAudioController setup:
     self.audioController = [[AEAudioController alloc]
-                            initWithAudioDescription:[AEAudioController nonInterleaved16BitStereoAudioDescription]
-                            inputEnabled:YES]; // don't forget to autorelease if you don't use ARC!
+                            initWithAudioDescription:[AEAudioController nonInterleavedFloatStereoAudioDescription]
+                            ];
     
-    NSError *error = NULL;
-    BOOL result = [_audioController start:&error];
+    NSError *errorAudioSetup = NULL;
+    BOOL result = [_audioController start:&errorAudioSetup];
     if ( !result ) {
-        NSLog(@"Error starting audio engine: %@", error.localizedDescription);
+        NSLog(@"Error starting audio engine: %@", errorAudioSetup.localizedDescription);
     }
     
     
     
-    //Simple oscillator works well:
-
-    // Create a block-based channel, with an implementation of an oscillator
-    __block float oscillatorPosition = 0;
-    self.oscillatorRate = 200/44100.0;
-    
-    self.myOscillatorChannel = [AEBlockChannel channelWithBlock:^(const AudioTimeStamp  *time,
-                                                         UInt32           frames,
-                                                         AudioBufferList *audio) {
-        for ( int i=0; i<frames; i++ ) {
-            // Quick sin-esque oscillator
-            float x = oscillatorPosition;
-            x *= x; x -= 1.0; x *= x;       // x now in the range 0...1
-            x *= INT16_MAX;
-            x -= INT16_MAX / 2;
-            oscillatorPosition += self.oscillatorRate;
-            if ( oscillatorPosition > 1.0 ) oscillatorPosition -= 2.0;
-            
-            ((SInt16*)audio->mBuffers[0].mData)[i] = x;
-            ((SInt16*)audio->mBuffers[1].mData)[i] = x;
-
-        }
-    }];
-    [self.myOscillatorChannel setVolume:0.2];
-    
-    
-    
-    
-    //Now trying to add a synthesiser from the Synthesis Toolkit:
-    
+    //MANDOLIN SYNTH:
     self.myMandolin = new stk::Mandolin(400);
+    self.myMandolin->setFrequency(400);
     
     self.mySynthChannel = [AEBlockChannel channelWithBlock:^(const AudioTimeStamp  *time,
                                                              UInt32           frames,
                                                              AudioBufferList *audio) {
         for ( int i=0; i<frames; i++ ) {
-
-            // STK Mandolin:
             
-            ((float*)audio->mBuffers[0].mData)[i] = self.myMandolin->tick();
+            ((float*)audio->mBuffers[0].mData)[i] =
             ((float*)audio->mBuffers[1].mData)[i] = self.myMandolin->tick();
+            
+            //OR:
+//            ((float*)audio->mBuffers[0].mData)[i] = self.myMandolin->tick();
+//            ((float*)audio->mBuffers[1].mData)[i] = self.myMandolin->lastOut();
+
             
             
         }
     }];
-    self.mySynthChannel.audioDescription = [AEAudioController nonInterleavedFloatStereoAudioDescription];
     
     
-    //No sound!
     
-    //Could it be because of the channel's asbd?
-    
-//    self.mySynthChannel.audioDescription = [AEAudioController nonInterleaved16BitStereoAudioDescription];
+    [self.audioController addChannels:@[self.mySynthChannel]];
     
     
-        
-    [self.audioController addChannels:@[self.myOscillatorChannel, self.mySynthChannel]];
+    //REVERB:
+    NSError *errorReverbSetup = NULL;
+    self.myReverb = [[AEAudioUnitFilter alloc] initWithComponentDescription:AEAudioComponentDescriptionMake(kAudioUnitManufacturer_Apple, kAudioUnitType_Effect, kAudioUnitSubType_Reverb2) audioController:_audioController error:&errorReverbSetup];
+    
+    if (errorReverbSetup) {
+        NSLog(@"Error setting up reverb: %@", errorReverbSetup.localizedDescription);
+    }
+    
+    AudioUnitSetParameter(self.myReverb.audioUnit, kReverb2Param_DryWetMix, kAudioUnitScope_Global, 0, 0.0f, 0);
+    
+    [self.audioController addFilter:self.myReverb toChannel:self.mySynthChannel];
+    
+    
+    
+    //LOW SHELF FILTER:    
+    NSError *errorDistortionSetup = NULL;
+    self.myDistortion = [[AEAudioUnitFilter alloc] initWithComponentDescription:AEAudioComponentDescriptionMake(kAudioUnitManufacturer_Apple, kAudioUnitType_Effect, kAudioUnitSubType_LowShelfFilter) audioController:_audioController error:&errorDistortionSetup];
+    
+    if (errorDistortionSetup) {
+        NSLog(@"Error setting up reverb: %@", errorDistortionSetup.localizedDescription);
+    }
+    
+    //this should set the filter's gain to 10?
+    CheckError(AudioUnitSetParameter(self.myDistortion.audioUnit, kAULowShelfParam_Gain, kAudioUnitScope_Global, 0, 10, 0), "setting filter gain to 10");
+    
+  
+    //Uncomment one of the lines below to test the two error checking functions:
+    
+    //Chris Adamson's:
+//    CheckError(AudioUnitSetParameter(self.myDistortion.audioUnit, kAudioUnitSubType_LowPassFilter, kAudioUnitScope_Global, 0, 10, 0), "TESTING CheckError, setting gain to 10");
+    
+    //check result does not format the error string well:
+//    checkResult(AudioUnitSetParameter(self.myDistortion.audioUnit, kAudioUnitSubType_LowPassFilter, kAudioUnitScope_Global, 0, 10, 0), "TESTING checkResult, setting gain to 10");
+
+
+    
+    [self.audioController addFilter:self.myDistortion toChannel:self.mySynthChannel];
+    
+    
     
 }
 
 -(IBAction)sliderMoved:(UISlider *)sender{
-    self.oscillatorRate = sender.value/44100.0;
+    
+    AudioUnitSetParameter(self.myReverb.audioUnit, kReverb2Param_DryWetMix, kAudioUnitScope_Global, 0, sender.value, 0);
+    
+    NSLog(@"dry wet set to %f", sender.value);
 }
 
 -(IBAction)buttonPressed{
